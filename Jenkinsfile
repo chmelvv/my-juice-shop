@@ -1,83 +1,133 @@
 pipeline {
-    agent any
+    agent {
+        kubernetes {
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  # Using the default service account that Jenkins uses. 
+  # Ensure this SA has RBAC permissions to create Deployments/Services in the namespace!
+  containers:
+  - name: jnlp
+    image: jenkins/inbound-agent:latest-jdk11
+  - name: gitleaks
+    image: zricethezav/gitleaks:latest
+    command: ["cat"]
+    tty: true
+  - name: checkov
+    image: bridgecrew/checkov:latest
+    command: ["cat"]
+    tty: true
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    command: ["cat"]
+    tty: true
+  - name: trivy
+    image: aquasec/trivy:latest
+    command: ["cat"]
+    tty: true
+  - name: kubectl
+    image: bitnami/kubectl:latest
+    command: ["cat"]
+    tty: true
+  - name: zap
+    image: owasp/zap2docker-stable:latest
+    command: ["cat"]
+    tty: true
+    user: root # ZAP needs root to write reports in the workspace
+'''
+        }
+    }
 
     environment {
-        // The name of the image we will build and scan
-        IMAGE_NAME = "juice-shop-vulnerable"
-        // The URL where the test environment for DAST will be running
-        APP_URL = "http://localhost:3000" 
+        // TODO: Replace with your actual Docker Hub or AWS ECR repository
+        REGISTRY_IMAGE = "your-dockerhub-username/juice-shop-vulnerable"
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        
+        // The internal DNS name of the Kubernetes service we will create
+        APP_URL = "http://juice-shop-service:3000" 
     }
 
     stages {
         stage('1. Secret Scanning: Gitleaks') {
             steps {
-                echo 'Running Gitleaks to find hardcoded secrets...'
-                // Run Gitleaks via Docker, scanning the current directory
-                sh 'docker run -v ${WORKSPACE}:/path zricethezav/gitleaks:latest detect --source="/path" -v || echo "Vulnerabilities found! (Proceeding for demo purposes)"'
+                container('gitleaks') {
+                    echo 'Running Gitleaks to find hardcoded secrets...'
+                    sh 'gitleaks detect --source="." -v || echo "Secrets found! (Proceeding for demo)"'
+                }
             }
         }
 
-        stage('2. SAST: SonarQube') {
+        stage('2. IaC Scanning: Checkov') {
             steps {
-                echo 'Running SonarQube Static Application Security Testing...'
-                // Note: A real SonarQube server is required for an actual run. 
-                // This shows the command for the SonarScanner CLI.
-                sh '''
-                    docker run --rm -e SONAR_HOST_URL="http://your-sonarqube-server:9000" \
-                    -e SONAR_LOGIN="your-sonar-token" \
-                    -v "${WORKSPACE}:/usr/src" \
-                    sonarsource/sonar-scanner-cli || echo "SAST issues found! (Proceeding for demo purposes)"
-                '''
+                container('checkov') {
+                    echo 'Scanning Kubernetes manifests with Checkov...'
+                    sh 'checkov -f deployment.yaml || echo "Misconfigurations found! (Proceeding for demo)"'
+                }
             }
         }
 
-        stage('3. IaC Scanning: Checkov') {
+        stage('3. Build & Push Image: Kaniko') {
             steps {
-                echo 'Scanning Kubernetes manifests with Checkov...'
-                // Scan the deployment.yaml file
-                sh 'docker run --rm -v ${WORKSPACE}:/work bridgecrew/checkov -f /work/deployment.yaml || echo "Misconfigurations found! (Proceeding for demo purposes)"'
-            }
-        }
-
-        stage('Build Image') {
-            steps {
-                echo 'Building the application Docker image...'
-                sh 'docker build -t ${IMAGE_NAME}:latest .'
+                container('kaniko') {
+                    echo 'Building and pushing image using Kaniko (daemonless)...'
+                    // Note: To push to a real registry, you need to mount registry credentials (e.g., config.json)
+                    // For demo purposes, if you don't have a registry, you can remove this stage and use bkimminich/juice-shop directly in the deploy stage.
+                    sh '''
+                        /kaniko/executor \
+                        --context `pwd` \
+                        --dockerfile Dockerfile \
+                        --destination ${REGISTRY_IMAGE}:${IMAGE_TAG} \
+                        --force
+                    '''
+                }
             }
         }
 
         stage('4. Container Scanning: Trivy') {
             steps {
-                echo 'Scanning the Docker image with Trivy...'
-                sh 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image ${IMAGE_NAME}:latest || echo "Critical vulnerabilities found in the image! (Proceeding for demo purposes)"'
+                container('trivy') {
+                    echo 'Scanning the pushed image with Trivy...'
+                    sh 'trivy image ${REGISTRY_IMAGE}:${IMAGE_TAG} || echo "Vulnerabilities found! (Proceeding for demo)"'
+                }
             }
         }
 
-        stage('Deploy to Staging (for DAST)') {
+        stage('5. Deploy to EKS (Staging Environment)') {
             steps {
-                echo 'Deploying the application for dynamic testing...'
-                // Run the container on port 3000
-                sh 'docker run -d -p 3000:3000 --name juice-shop-demo ${IMAGE_NAME}:latest'
-                // Wait a few seconds to ensure the application starts properly
-                sleep 15
+                container('kubectl') {
+                    echo 'Deploying the application to EKS...'
+                    // Create a deployment dynamically
+                    sh 'kubectl create deployment juice-shop-demo --image=${REGISTRY_IMAGE}:${IMAGE_TAG} || true'
+                    // Expose it as an internal ClusterIP service
+                    sh 'kubectl expose deployment juice-shop-demo --port=3000 --name=juice-shop-service || true'
+                    // Wait for the pod to be ready
+                    sh 'kubectl wait --for=condition=available --timeout=60s deployment/juice-shop-demo'
+                }
             }
         }
 
-        stage('5. DAST: OWASP ZAP') {
+        stage('6. DAST: OWASP ZAP') {
             steps {
-                echo 'Running OWASP ZAP dynamic scanning...'
-                // Run Baseline Scan against the deployed container
-                sh 'docker run -t owasp/zap2docker-stable zap-baseline.py -t ${APP_URL} || echo "Vulnerabilities found in the running application!"'
+                container('zap') {
+                    echo 'Running OWASP ZAP dynamic scanning against the EKS internal service...'
+                    // Run Baseline Scan against the internal Kubernetes service URL
+                    sh 'zap-baseline.py -t ${APP_URL} -r zap-report.html || echo "Vulnerabilities found in the running application!"'
+                }
             }
         }
     }
 
     post {
         always {
-            echo 'Cleaning up the environment after the demo...'
-            // Stop and remove the test container
-            sh 'docker stop juice-shop-demo || true'
-            sh 'docker rm juice-shop-demo || true'
+            echo 'Cleaning up the EKS environment after the demo...'
+            container('kubectl') {
+                // Delete the deployment and service so the next pipeline run starts fresh
+                sh 'kubectl delete deployment juice-shop-demo --ignore-not-found=true'
+                sh 'kubectl delete service juice-shop-service --ignore-not-found=true'
+            }
+            // Archive the ZAP report so students can download and review it
+            archiveArtifacts artifacts: 'zap-report.html', allowEmptyArchive: true
         }
     }
 }

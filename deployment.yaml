@@ -1,0 +1,27 @@
+# deployment.yaml (Commit this to your repo for Checkov to scan)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: juice-shop-vulnerable
+  labels:
+    app: juice-shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: juice-shop
+  template:
+    metadata:
+      labels:
+        app: juice-shop
+    spec:
+      containers:
+      - name: juice-shop
+        image: bkimminich/juice-shop:latest
+        ports:
+        - containerPort: 3000
+        # VULNERABILITY 1: No resource requests/limits (Denial of Service risk)
+        # VULNERABILITY 2: No securityContext dropping privileges
+        securityContext:
+          privileged: true          # VULNERABILITY 3: Privileged container
+          runAsUser: 0              # VULNERABILITY 4: Running as Root
