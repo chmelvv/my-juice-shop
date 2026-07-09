@@ -9,7 +9,7 @@ spec:
   # Ensure this SA has RBAC permissions to create Deployments/Services in the namespace!
   containers:
   - name: jnlp
-    image: jenkins/inbound-agent:latest-jdk11
+    image: jenkins/inbound-agent:jdk21
   - name: gitleaks
     image: zricethezav/gitleaks:latest
     command: ["cat"]
