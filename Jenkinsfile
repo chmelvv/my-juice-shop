@@ -63,7 +63,7 @@ spec:
             steps {
                 container('gitleaks') {
                     echo 'Running Gitleaks to find hardcoded secrets...'
-                    sh 'gitleaks detect --source="." -v || echo "Secrets found! (Proceeding for demo)"'
+                    sh 'gitleaks detect --no-git --source="." -v || echo "Secrets found! (Proceeding for demo)"'
                 }
             }
         }
