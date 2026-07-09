@@ -31,7 +31,7 @@ spec:
     command: ["cat"]
     tty: true
   - name: zap
-    image: owasp/zap2docker-stable:latest
+    image: zaproxy/zap-stable:latest
     command: ["cat"]
     tty: true
     user: root # ZAP needs root to write reports in the workspace
@@ -41,7 +41,7 @@ spec:
 
     environment {
         // TODO: Replace with your actual Docker Hub or AWS ECR repository
-        REGISTRY_IMAGE = "your-dockerhub-username/juice-shop-vulnerable"
+        REGISTRY_IMAGE = "chmelvv/juice-shop-vulnerable"
         IMAGE_TAG = "${BUILD_NUMBER}"
         
         // The internal DNS name of the Kubernetes service we will create
