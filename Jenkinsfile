@@ -5,8 +5,6 @@ pipeline {
 apiVersion: v1
 kind: Pod
 spec:
-  # Using the default service account that Jenkins uses. 
-  # Ensure this SA has RBAC permissions to create Deployments/Services in the namespace!
   containers:
   - name: jnlp
     image: jenkins/inbound-agent:jdk21
@@ -18,15 +16,6 @@ spec:
     image: bridgecrew/checkov:latest
     command: ["cat"]
     tty: true
-  - name: kaniko
-    image: gcr.io/kaniko-project/executor:debug
-    command: ["cat"]
-    tty: true
-    # Added from your first working file: Registry Authentication
-    volumeMounts:
-      - name: docker-config
-        mountPath: /kaniko/.docker/config.json
-        subPath: .dockerconfigjson
   - name: trivy
     image: aquasec/trivy:latest
     command: ["cat"]
@@ -39,22 +28,17 @@ spec:
     image: zaproxy/zap-stable:latest
     command: ["cat"]
     tty: true
-    user: root # ZAP needs root to write reports in the workspace
-  # Added from your first working file: Volumes for secrets
-  volumes:
-    - name: docker-config
-      secret:
-        secretName: dockerhub-secret
+    user: root # ZAP needs root privileges to write the HTML report to the Jenkins workspace
 '''
         }
     }
 
     environment {
-        // Ensure this matches the repository you have access to in your dockerhub-secret
-        REGISTRY_IMAGE = "chmelvv/juice-shop-vulnerable"
-        IMAGE_TAG = "${BUILD_NUMBER}"
+        // Using the official, pre-built vulnerable Juice Shop image to save time
+        REGISTRY_IMAGE = "bkimminich/juice-shop"
+        IMAGE_TAG = "latest"
         
-        // The internal DNS name of the Kubernetes service we will create
+        // Internal Kubernetes DNS address for ZAP DAST scanning
         APP_URL = "http://juice-shop-service:3000" 
     }
 
@@ -63,6 +47,7 @@ spec:
             steps {
                 container('gitleaks') {
                     echo 'Running Gitleaks to find hardcoded secrets...'
+                    // Using --no-git to ignore the Git history of the deleted test/ folder
                     sh 'gitleaks detect --no-git --source="." -v || echo "Secrets found! (Proceeding for demo)"'
                 }
             }
@@ -72,37 +57,23 @@ spec:
             steps {
                 container('checkov') {
                     echo 'Scanning Kubernetes manifests with Checkov...'
+                    // Scanning the deployment.yaml file for infrastructure misconfigurations
                     sh 'checkov -f deployment.yaml || echo "Misconfigurations found! (Proceeding for demo)"'
                 }
             }
         }
 
-        stage('3. Build & Push Image: Kaniko') {
-            steps {
-                container('kaniko') {
-                    echo 'Building and pushing image using Kaniko (daemonless)...'
-                    sh '''
-                        /kaniko/executor \
-                        --context `pwd` \
-                        --dockerfile Dockerfile \
-                        --destination ${REGISTRY_IMAGE}:${IMAGE_TAG} \
-                        --destination ${REGISTRY_IMAGE}:latest \
-                        --force
-                    '''
-                }
-            }
-        }
-
-        stage('4. Container Scanning: Trivy') {
+        stage('3. Container Scanning: Trivy') {
             steps {
                 container('trivy') {
-                    echo 'Scanning the pushed image with Trivy...'
+                    echo 'Scanning the public image with Trivy...'
+                    // Trivy will automatically pull the image from Docker Hub and scan it
                     sh 'trivy image ${REGISTRY_IMAGE}:${IMAGE_TAG} || echo "Vulnerabilities found! (Proceeding for demo)"'
                 }
             }
         }
 
-        stage('5. Deploy to EKS (Staging Environment)') {
+        stage('4. Deploy to EKS (Staging Environment)') {
             steps {
                 container('kubectl') {
                     echo 'Deploying the application to EKS...'
@@ -110,17 +81,17 @@ spec:
                     sh 'kubectl create deployment juice-shop-demo --image=${REGISTRY_IMAGE}:${IMAGE_TAG} || true'
                     // Expose it as an internal ClusterIP service
                     sh 'kubectl expose deployment juice-shop-demo --port=3000 --name=juice-shop-service || true'
-                    // Wait for the pod to be ready
+                    // Wait for the pod to be fully ready before starting the ZAP scan
                     sh 'kubectl wait --for=condition=available --timeout=60s deployment/juice-shop-demo'
                 }
             }
         }
 
-        stage('6. DAST: OWASP ZAP') {
+        stage('5. DAST: OWASP ZAP') {
             steps {
                 container('zap') {
                     echo 'Running OWASP ZAP dynamic scanning against the EKS internal service...'
-                    // Run Baseline Scan against the internal Kubernetes service URL
+                    // Run Baseline Scan against the internal Kubernetes service URL and generate an HTML report
                     sh 'zap-baseline.py -t ${APP_URL} -r zap-report.html || echo "Vulnerabilities found in the running application!"'
                 }
             }
@@ -131,11 +102,11 @@ spec:
         always {
             echo 'Cleaning up the EKS environment after the demo...'
             container('kubectl') {
-                // Delete the deployment and service so the next pipeline run starts fresh
+                // Delete the deployment and service to keep the cluster clean for the next run
                 sh 'kubectl delete deployment juice-shop-demo --ignore-not-found=true'
                 sh 'kubectl delete service juice-shop-service --ignore-not-found=true'
             }
-            // Archive the ZAP report so students can download and review it
+            // Save the ZAP HTML report as a Jenkins artifact so students can download it
             archiveArtifacts artifacts: 'zap-report.html', allowEmptyArchive: true
         }
     }
