@@ -22,6 +22,11 @@ spec:
     image: gcr.io/kaniko-project/executor:debug
     command: ["cat"]
     tty: true
+    # Added from your first working file: Registry Authentication
+    volumeMounts:
+      - name: docker-config
+        mountPath: /kaniko/.docker/config.json
+        subPath: .dockerconfigjson
   - name: trivy
     image: aquasec/trivy:latest
     command: ["cat"]
@@ -35,12 +40,17 @@ spec:
     command: ["cat"]
     tty: true
     user: root # ZAP needs root to write reports in the workspace
+  # Added from your first working file: Volumes for secrets
+  volumes:
+    - name: docker-config
+      secret:
+        secretName: dockerhub-secret
 '''
         }
     }
 
     environment {
-        // TODO: Replace with your actual Docker Hub or AWS ECR repository
+        // Ensure this matches the repository you have access to in your dockerhub-secret
         REGISTRY_IMAGE = "chmelvv/juice-shop-vulnerable"
         IMAGE_TAG = "${BUILD_NUMBER}"
         
@@ -71,13 +81,12 @@ spec:
             steps {
                 container('kaniko') {
                     echo 'Building and pushing image using Kaniko (daemonless)...'
-                    // Note: To push to a real registry, you need to mount registry credentials (e.g., config.json)
-                    // For demo purposes, if you don't have a registry, you can remove this stage and use bkimminich/juice-shop directly in the deploy stage.
                     sh '''
                         /kaniko/executor \
                         --context `pwd` \
                         --dockerfile Dockerfile \
                         --destination ${REGISTRY_IMAGE}:${IMAGE_TAG} \
+                        --destination ${REGISTRY_IMAGE}:latest \
                         --force
                     '''
                 }
